@@ -1,49 +1,144 @@
-# ISO USB Flasher AppImage project
+# RGS ISO Flasher
 
-A Tkinter GUI wrapper for creating bootable USB drives from ISO files.
+A modern Linux GUI utility for creating bootable USB drives from ISO files.
+
+Built for simplicity, portability, and Steam Deck/Linux compatibility.
+
+---
 
 ## Features
 
-- Choose an ISO file in a GUI.
-- Choose a target block device from `lsblk`.
-- Enter sudo password in the GUI; it is passed once to `sudo -S` and then cleared from the field.
-- Auto mode:
-  - Windows installer ISO: creates GPT + FAT32 USB, copies files, and splits `sources/install.wim` into `.swm` chunks using `wimlib-imagex`.
-  - Non-Windows ISO: falls back to raw `dd` writing.
-- Explicit Windows mode and raw dd mode.
+- Simple graphical interface
+- Browse and select ISO files
+- Detect and select USB drives automatically
+- Supports Windows installer ISOs
+- Supports Linux ISOs
+- Automatic Windows `install.wim` splitting using `wimlib`
+- Raw `dd` flashing mode for Linux images
+- AppImage portable distribution
+- SteamOS and Steam Deck compatible
+- Sudo authentication directly in the app
 
-## Host dependencies
+---
 
-Runtime dependencies on the Linux host:
+## Supported Modes
+
+### Auto Mode
+Automatically detects the ISO type:
+
+- **Windows ISO**
+  - Creates GPT + FAT32 USB
+  - Copies installer files
+  - Splits large `install.wim` into `.swm` chunks
+
+- **Linux ISO**
+  - Uses raw `dd` flashing
+
+### Manual Modes
+
+- Windows Installer Mode
+- Raw `dd` Mode
+
+---
+
+## Screenshots
+
+_Add screenshots here later_
+
+---
+
+## Linux Host Dependencies
+
+### Ubuntu / Debian
 
 ```bash
 sudo apt install python3 python3-tk coreutils util-linux parted dosfstools rsync wimtools
 ```
 
-`wimtools` provides `wimlib-imagex`, needed for Windows ISOs with a large `install.wim`.
+### Arch / SteamOS
 
-## Run without building AppImage
+```bash
+sudo pacman -S python tk parted dosfstools rsync wimlib ntfs-3g
+```
+
+---
+
+## Running Without AppImage
 
 ```bash
 ./iso-flasher.AppDir/AppRun
 ```
 
-## Build a real AppImage
+---
 
-Install `appimagetool`, then:
+## Building the AppImage
+
+Download `appimagetool`:
+
+```bash
+wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+chmod +x appimagetool-x86_64.AppImage
+```
+
+Build:
 
 ```bash
 ./build_appimage.sh
+ARCH=x86_64 ./appimagetool-x86_64.AppImage iso-flasher.AppDir
 ```
 
-Output:
+---
 
-```text
-ISO-USB-Flasher-x86_64.AppImage
+## Running the AppImage
+
+```bash
+chmod +x RGS-ISO-Flasher-x86_64.AppImage
+./RGS-ISO-Flasher-x86_64.AppImage
 ```
 
-## Important safety notes
+If AppImage mounting fails:
 
-- The selected USB device is erased.
-- For Windows installer ISOs, raw `dd` often does not produce a usable installer USB. The Windows path uses FAT32 file-copy and `install.wim` splitting.
-- The sudo password is not stored, but passing it through a GUI process is still less ideal than PolicyKit. For production, use `pkexec` with a proper policy file.
+```bash
+./RGS-ISO-Flasher-x86_64.AppImage --appimage-extract
+cd squashfs-root
+./AppRun
+```
+
+---
+
+## Safety Notes
+
+- The selected USB device will be completely erased.
+- Always verify the correct USB device before flashing.
+- Windows ISOs require special handling; raw `dd` alone is often not bootable.
+- Passwords are not stored permanently.
+- Future releases may migrate to PolicyKit (`pkexec`) for improved security.
+
+---
+
+## Compatibility
+
+Tested on:
+
+- Ubuntu
+- Arch Linux
+- SteamOS
+- Steam Deck
+- Fedora
+
+---
+
+## License
+
+MIT License
+
+---
+
+## Roadmap
+
+- Progress bar
+- Dark mode
+- Drag & drop ISO support
+- Secure PolicyKit authentication
+- Persistent Linux live USB support
+- Multi-language support
