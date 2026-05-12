@@ -2,6 +2,6 @@
 Type=Application
 Name=ISO USB Flasher
 Exec=iso-flasher-gui
-Icon=iso-flasher
+Icon=rgs-iso-flasher
 Categories=System;Utility;
 Terminal=false

@@ -1,7 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=ISO USB Flasher
+Name=RGS ISO Flasher
+Comment=Create bootable USB drives from ISO files
 Exec=iso-flasher-gui
-Icon=iso-flasher
-Categories=System;Utility;
+Icon=rgs-iso-flasher
+Categories=Utility;
 Terminal=false

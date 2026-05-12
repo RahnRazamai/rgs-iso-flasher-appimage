@@ -1,88 +1,194 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
-ISO=""; DEVICE=""; MODE="auto"
+set -euo pipefail
+
+ISO=""
+DEVICE=""
+MODE="auto"
+
+log() {
+  echo "[RGS ISO Flasher] $*"
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing dependency: $1"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --iso) ISO="$2"; shift 2;;
-    --device) DEVICE="$2"; shift 2;;
-    --mode) MODE="$2"; shift 2;;
-    *) echo "Unknown arg: $1" >&2; exit 2;;
+    --iso)
+      ISO="$2"
+      shift 2
+      ;;
+    --device)
+      DEVICE="$2"
+      shift 2
+      ;;
+    --mode)
+      MODE="$2"
+      shift 2
+      ;;
+    *)
+      die "Unknown arg: $1"
+      ;;
   esac
 done
-[[ -f "$ISO" ]] || { echo "ISO not found: $ISO"; exit 2; }
-[[ -b "$DEVICE" ]] || { echo "Block device not found: $DEVICE"; exit 2; }
-[[ "$DEVICE" =~ ^/dev/ ]] || { echo "Invalid device: $DEVICE"; exit 2; }
 
-need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1"; exit 3; }; }
-for c in lsblk umount wipefs parted mkfs.vfat mount rsync findmnt sync; do need_cmd "$c"; done
+[[ -f "$ISO" ]] || die "ISO file not found: $ISO"
+[[ -b "$DEVICE" ]] || die "Target device is not a block device: $DEVICE"
 
-log(){ printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
-cleanup(){
-  set +e
-  [[ -n "${ISO_MNT:-}" ]] && mountpoint -q "$ISO_MNT" && umount "$ISO_MNT"
-  [[ -n "${USB_MNT:-}" ]] && mountpoint -q "$USB_MNT" && umount "$USB_MNT"
-  [[ -n "${ISO_MNT:-}" ]] && rm -rf "$ISO_MNT"
-  [[ -n "${USB_MNT:-}" ]] && rm -rf "$USB_MNT"
+case "$MODE" in
+  auto|windows|raw) ;;
+  *) die "Invalid mode: $MODE" ;;
+esac
+
+need_cmd lsblk
+need_cmd umount
+need_cmd sync
+
+log "ISO: $ISO"
+log "Device: $DEVICE"
+log "Mode: $MODE"
+
+detect_windows_iso() {
+  local mount_dir
+  mount_dir="$(mktemp -d)"
+
+  mount -o loop,ro "$ISO" "$mount_dir"
+
+  if [[ -d "$mount_dir/sources" ]] || [[ -d "$mount_dir/SOURCES" ]]; then
+    umount "$mount_dir"
+    rmdir "$mount_dir"
+    return 0
+  fi
+
+  umount "$mount_dir"
+  rmdir "$mount_dir"
+  return 1
 }
-trap cleanup EXIT
 
-log "Target device: $DEVICE"
-log "Unmounting mounted partitions on target..."
-while read -r mp; do [[ -n "$mp" ]] && umount "$mp" || true; done < <(lsblk -nrpo MOUNTPOINTS "$DEVICE" | sed '/^$/d')
+unmount_device_partitions() {
+  log "Unmounting existing partitions..."
+
+  while read -r part; do
+    [[ -n "$part" ]] || continue
+    umount "$part" 2>/dev/null || true
+  done < <(lsblk -ln -o PATH "$DEVICE" | tail -n +2)
+}
+
+flash_raw() {
+  need_cmd dd
+
+  unmount_device_partitions
+
+  log "Writing ISO using raw dd..."
+  dd if="$ISO" of="$DEVICE" bs=4M status=progress conv=fsync
+
+  sync
+  log "Raw flashing completed."
+}
+
+flash_windows() {
+  need_cmd parted
+  need_cmd mkfs.vfat
+  need_cmd rsync
+  need_cmd mount
+  need_cmd wimlib-imagex
+
+  local iso_mount
+  local usb_mount
+  local part
+
+  iso_mount="$(mktemp -d)"
+  usb_mount="$(mktemp -d)"
+
+  cleanup() {
+    if [[ -n "${iso_mount:-}" ]]; then
+      umount "$iso_mount" 2>/dev/null || true
+      rmdir "$iso_mount" 2>/dev/null || true
+    fi
+
+    if [[ -n "${usb_mount:-}" ]]; then
+      umount "$usb_mount" 2>/dev/null || true
+      rmdir "$usb_mount" 2>/dev/null || true
+    fi
+  }
+
+  trap cleanup EXIT
+
+  unmount_device_partitions
+
+  log "Creating GPT partition table..."
+  parted -s "$DEVICE" mklabel gpt
+  parted -s "$DEVICE" mkpart primary fat32 1MiB 100%
+  parted -s "$DEVICE" set 1 boot on
+  parted -s "$DEVICE" set 1 esp on
+
+  sync
+  sleep 2
+  partprobe "$DEVICE" 2>/dev/null || true
+  sleep 2
+
+  if [[ "$DEVICE" =~ nvme|mmcblk ]]; then
+    part="${DEVICE}p1"
+  else
+    part="${DEVICE}1"
+  fi
+
+  [[ -b "$part" ]] || die "Partition not found after formatting: $part"
+
+  log "Formatting USB partition as FAT32..."
+  mkfs.vfat -F 32 -n RGSUSB "$part"
+
+  log "Mounting ISO and USB..."
+  mount -o loop,ro "$ISO" "$iso_mount"
+  mount "$part" "$usb_mount"
+
+  log "Copying Windows installer files except install.wim..."
+  rsync -rtv --info=progress2 \
+    --no-owner \
+    --no-group \
+    --no-perms \
+    --modify-window=1 \
+    --exclude='sources/install.wim' \
+    --exclude='sources/INSTALL.WIM' \
+    "$iso_mount"/ "$usb_mount"/
+
+  local wim=""
+  if [[ -f "$iso_mount/sources/install.wim" ]]; then
+    wim="$iso_mount/sources/install.wim"
+  elif [[ -f "$iso_mount/sources/INSTALL.WIM" ]]; then
+    wim="$iso_mount/sources/INSTALL.WIM"
+  fi
+
+  if [[ -n "$wim" ]]; then
+    log "Splitting install.wim into FAT32-compatible SWM files..."
+    mkdir -p "$usb_mount/sources"
+    wimlib-imagex split "$wim" "$usb_mount/sources/install.swm" 3800
+  else
+    log "No install.wim found. Skipping WIM split."
+  fi
+
+  sync
+  log "Windows USB creation completed."
+}
 
 if [[ "$MODE" == "raw" ]]; then
-  need_cmd dd
-  log "Raw writing ISO with dd. This is suitable for most Linux hybrid ISOs, not Windows installer ISOs."
-  dd if="$ISO" of="$DEVICE" bs=4M status=progress oflag=sync
-  sync
-  log "Done."
-  exit 0
-fi
-
-ISO_MNT=$(mktemp -d /tmp/iso-mnt.XXXXXX)
-USB_MNT=$(mktemp -d /tmp/usb-mnt.XXXXXX)
-log "Mounting ISO read-only..."
-mount -o loop,ro "$ISO" "$ISO_MNT"
-
-is_windows=0
-if [[ -e "$ISO_MNT/sources/install.wim" || -e "$ISO_MNT/sources/install.esd" || -e "$ISO_MNT/bootmgr" ]]; then
-  is_windows=1
-fi
-if [[ "$MODE" == "windows" ]]; then is_windows=1; fi
-if [[ "$MODE" == "auto" && "$is_windows" -eq 0 ]]; then
-  cleanup
-  need_cmd dd
-  log "Auto mode did not detect Windows ISO. Falling back to raw dd."
-  dd if="$ISO" of="$DEVICE" bs=4M status=progress oflag=sync
-  sync
-  log "Done."
-  exit 0
-fi
-
-need_cmd parted; need_cmd mkfs.vfat; need_cmd rsync
-if [[ -f "$ISO_MNT/sources/install.wim" ]]; then need_cmd wimlib-imagex; fi
-
-log "Creating a GPT + FAT32 USB for Windows UEFI boot..."
-wipefs -a "$DEVICE"
-parted -s "$DEVICE" mklabel gpt
-parted -s "$DEVICE" mkpart primary fat32 1MiB 100%
-parted -s "$DEVICE" set 1 esp on
-partprobe "$DEVICE" || true
-sleep 2
-PART="${DEVICE}1"
-if [[ "$DEVICE" =~ nvme|mmcblk ]]; then PART="${DEVICE}p1"; fi
-[[ -b "$PART" ]] || { echo "Could not find partition $PART"; exit 4; }
-mkfs.vfat -F32 -n WINUSB "$PART"
-mount "$PART" "$USB_MNT"
-
-log "Copying Windows ISO files..."
-if [[ -f "$ISO_MNT/sources/install.wim" ]]; then
-  rsync -aH --info=progress2 --exclude='/sources/install.wim' "$ISO_MNT/" "$USB_MNT/"
-  mkdir -p "$USB_MNT/sources"
-  log "Splitting install.wim into FAT32-compatible .swm files..."
-  wimlib-imagex split "$ISO_MNT/sources/install.wim" "$USB_MNT/sources/install.swm" 3800
+  flash_raw
+elif [[ "$MODE" == "windows" ]]; then
+  flash_windows
 else
-  rsync -aH --info=progress2 "$ISO_MNT/" "$USB_MNT/"
+  if detect_windows_iso; then
+    log "Detected Windows installer ISO."
+    flash_windows
+  else
+    log "Detected non-Windows ISO."
+    flash_raw
+  fi
 fi
-sync
-log "Windows USB creation complete."
+
+log "Done."
