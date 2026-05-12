@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+import os, re, shlex, subprocess, threading, queue, sys
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+APP_TITLE = "ISO USB Flasher"
+
+class FlasherGUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(APP_TITLE)
+        self.geometry("780x560")
+        self.resizable(True, True)
+        self.proc = None
+        self.q = queue.Queue()
+        self.create_widgets()
+        self.refresh_devices()
+        self.after(100, self.drain_queue)
+
+    def create_widgets(self):
+        pad = {"padx": 10, "pady": 6}
+        main = ttk.Frame(self)
+        main.pack(fill="both", expand=True)
+
+        ttk.Label(main, text="ISO file").grid(row=0, column=0, sticky="w", **pad)
+        self.iso_var = tk.StringVar()
+        ttk.Entry(main, textvariable=self.iso_var).grid(row=0, column=1, sticky="ew", **pad)
+        ttk.Button(main, text="Choose…", command=self.choose_iso).grid(row=0, column=2, sticky="ew", **pad)
+
+        ttk.Label(main, text="Target USB device").grid(row=1, column=0, sticky="w", **pad)
+        self.dev_var = tk.StringVar()
+        self.dev_combo = ttk.Combobox(main, textvariable=self.dev_var, state="readonly")
+        self.dev_combo.grid(row=1, column=1, sticky="ew", **pad)
+        ttk.Button(main, text="Refresh", command=self.refresh_devices).grid(row=1, column=2, sticky="ew", **pad)
+
+        ttk.Label(main, text="Mode").grid(row=2, column=0, sticky="w", **pad)
+        self.mode_var = tk.StringVar(value="auto")
+        mode = ttk.Frame(main)
+        mode.grid(row=2, column=1, sticky="w", **pad)
+        ttk.Radiobutton(mode, text="Auto", variable=self.mode_var, value="auto").pack(side="left")
+        ttk.Radiobutton(mode, text="Windows ISO", variable=self.mode_var, value="windows").pack(side="left", padx=8)
+        ttk.Radiobutton(mode, text="Raw dd", variable=self.mode_var, value="raw").pack(side="left", padx=8)
+
+        ttk.Label(main, text="Sudo password").grid(row=3, column=0, sticky="w", **pad)
+        self.pass_var = tk.StringVar()
+        ttk.Entry(main, textvariable=self.pass_var, show="•").grid(row=3, column=1, sticky="ew", **pad)
+
+        self.confirm_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(main, variable=self.confirm_var, text="I understand the selected device will be erased").grid(row=4, column=1, sticky="w", **pad)
+
+        actions = ttk.Frame(main)
+        actions.grid(row=5, column=1, sticky="w", **pad)
+        self.flash_btn = ttk.Button(actions, text="Flash USB", command=self.start_flash)
+        self.flash_btn.pack(side="left")
+        ttk.Button(actions, text="Stop", command=self.stop_flash).pack(side="left", padx=8)
+
+        ttk.Label(main, text="Log").grid(row=6, column=0, sticky="nw", **pad)
+        self.log = tk.Text(main, height=18, wrap="word")
+        self.log.grid(row=6, column=1, columnspan=2, sticky="nsew", **pad)
+
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(6, weight=1)
+
+    def choose_iso(self):
+        p = filedialog.askopenfilename(title="Choose ISO", filetypes=[("ISO images", "*.iso"), ("All files", "*")])
+        if p:
+            self.iso_var.set(p)
+
+    def refresh_devices(self):
+        try:
+            out = subprocess.check_output(["lsblk", "-J", "-o", "NAME,PATH,SIZE,MODEL,TRAN,TYPE,MOUNTPOINTS"], text=True)
+            import json
+            data = json.loads(out)
+            items = []
+            self.dev_map = {}
+            for d in data.get("blockdevices", []):
+                if d.get("type") != "disk":
+                    continue
+                path = d.get("path") or f"/dev/{d.get('name')}"
+                tran = d.get("tran") or ""
+                # Prefer USB/removable-looking disks but still show all non-loop disks.
+                model = (d.get("model") or "Unknown").strip()
+                label = f"{path} — {d.get('size','?')} — {model} — {tran or 'disk'}"
+                items.append(label)
+                self.dev_map[label] = path
+            self.dev_combo["values"] = items
+            if items:
+                self.dev_combo.current(0)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Could not list disks: {e}")
+
+    def append_log(self, text):
+        self.log.insert("end", text)
+        self.log.see("end")
+
+    def validate(self):
+        iso = self.iso_var.get().strip()
+        selected = self.dev_var.get().strip()
+        password = self.pass_var.get()
+        if not iso or not os.path.isfile(iso):
+            messagebox.showerror(APP_TITLE, "Please choose a valid ISO file.")
+            return None
+        if not selected or selected not in getattr(self, "dev_map", {}):
+            messagebox.showerror(APP_TITLE, "Please choose a target USB device.")
+            return None
+        if not password:
+            messagebox.showerror(APP_TITLE, "Please enter your sudo password.")
+            return None
+        if not self.confirm_var.get():
+            messagebox.showerror(APP_TITLE, "Please tick the erase confirmation checkbox.")
+            return None
+        dev = self.dev_map[selected]
+        if not re.match(r"^/dev/[a-zA-Z0-9_/-]+$", dev):
+            messagebox.showerror(APP_TITLE, "Invalid device path.")
+            return None
+        return iso, dev, password, self.mode_var.get()
+
+    def start_flash(self):
+        vals = self.validate()
+        if not vals:
+            return
+        iso, dev, password, mode = vals
+        warning = f"This will ERASE {dev}.\n\nISO:\n{iso}\n\nContinue?"
+        if not messagebox.askyesno(APP_TITLE, warning):
+            return
+        self.flash_btn.config(state="disabled")
+        self.append_log("\n=== Starting flash ===\n")
+        runner = os.path.join(os.path.dirname(__file__), "iso-flasher-runner")
+        cmd = ["sudo", "-S", "-p", "", runner, "--iso", iso, "--device", dev, "--mode", mode]
+        def worker():
+            try:
+                self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                self.proc.stdin.write(password + "\n")
+                self.proc.stdin.flush()
+                self.pass_var.set("")
+                for line in self.proc.stdout:
+                    self.q.put(line)
+                rc = self.proc.wait()
+                self.q.put(f"\n=== Finished with exit code {rc} ===\n")
+            except Exception as e:
+                self.q.put(f"ERROR: {e}\n")
+            finally:
+                self.q.put(None)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def stop_flash(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            self.append_log("\nRequested stop. Device may be left incomplete.\n")
+
+    def drain_queue(self):
+        try:
+            while True:
+                item = self.q.get_nowait()
+                if item is None:
+                    self.flash_btn.config(state="normal")
+                else:
+                    self.append_log(item)
+        except queue.Empty:
+            pass
+        self.after(100, self.drain_queue)
+
+if __name__ == "__main__":
+    app = FlasherGUI()
+    app.mainloop()

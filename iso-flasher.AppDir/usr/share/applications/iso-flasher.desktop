@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=ISO USB Flasher
+Exec=iso-flasher-gui
+Icon=iso-flasher
+Categories=System;Utility;
+Terminal=false
