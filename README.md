@@ -43,7 +43,7 @@ Automatically detects the ISO type:
 
 ## Screenshots
 
-_Add screenshots here later_
+<img width="952" height="759" alt="Screenshot_20260514_102809" src="https://github.com/user-attachments/assets/2c77d1e7-b389-4760-ba64-ca1f21a5b39d" />
 
 ---
 
