@@ -49,21 +49,28 @@ Automatically detects the ISO type:
 
 ## Linux Host Dependencies
 
+The AppImage bundles Python 3.12, Tkinter, and Tcl/Tk. You do not need to
+install Python or Tk to open it. The flashing operations still use the host's
+system tools and `sudo`.
+
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install python3 python3-tk coreutils util-linux parted dosfstools rsync wimtools
+sudo apt install sudo coreutils util-linux parted dosfstools rsync wimtools systemd
 ```
 
 ### Arch / SteamOS
 
 ```bash
-sudo pacman -S python tk parted dosfstools rsync wimlib ntfs-3g
+sudo pacman -S sudo coreutils util-linux parted dosfstools rsync wimlib systemd
 ```
 
 ---
 
 ## Running Without AppImage
+
+Running from the source checkout requires host Python and Tkinter. Install
+`python3 python3-tk` on Ubuntu/Debian or `python tk` on Arch/SteamOS first.
 
 ```bash
 ./iso-flasher.AppDir/AppRun
@@ -73,19 +80,42 @@ sudo pacman -S python tk parted dosfstools rsync wimlib ntfs-3g
 
 ## Building the AppImage
 
-Download `appimagetool`:
-
-```bash
-wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-chmod +x appimagetool-x86_64.AppImage
-```
-
-Build:
+Build on an x86_64 Linux host with Bash, `curl`, `sha256sum`, and standard
+coreutils installed:
 
 ```bash
 ./build_appimage.sh
-ARCH=x86_64 ./appimagetool-x86_64.AppImage iso-flasher.AppDir
 ```
+
+The script downloads and verifies pinned Python, appimagetool, and static
+AppImage runtime assets. It stages a complete application in `.build/` and
+writes `RGS-ISO-Flasher-x86_64.AppImage` in the repository root. It works from
+any current directory and does not require FUSE or host Python/Tkinter.
+When upgrading an asset, update its URL/version and SHA-256 checksum together
+in `build_appimage.sh`.
+
+Do not package the source `iso-flasher.AppDir` directly with appimagetool: the
+build script must first add the portable runtime.
+
+Check the packaged window on a desktop:
+
+```bash
+bash tests/smoke_appimage.sh
+```
+
+For headless CI, install `xvfb` and `xauth`, then run
+`xvfb-run -a bash tests/smoke_appimage.sh`. This test replaces host Python with
+a failing stub, overrides host Python/Tcl settings, and opens the real window
+for 15 seconds through each launch path. Disk discovery is stubbed; it does
+not flash any device. GitHub Actions builds, tests, and uploads the AppImage.
+
+Every push to `main` or `master` (including a pull request merge) also publishes
+the tested artifact and its SHA-256 checksum in a GitHub release tagged
+`build-<workflow run number>`, marked as the latest release. The tag points to
+the exact commit that was built. Publishing uses the repository's automatic
+`GITHUB_TOKEN`; no extra secret is required. Pull requests and manual workflow
+runs only build and test. Rerunning an already published build preserves the
+existing release and its assets.
 
 ---
 
@@ -97,6 +127,12 @@ chmod +x RGS-ISO-Flasher-x86_64.AppImage
 ```
 
 If AppImage mounting fails:
+
+```bash
+./RGS-ISO-Flasher-x86_64.AppImage --appimage-extract-and-run
+```
+
+Or extract it manually:
 
 ```bash
 ./RGS-ISO-Flasher-x86_64.AppImage --appimage-extract
@@ -118,6 +154,12 @@ cd squashfs-root
 
 ## Compatibility
 
+The packaged Python runtime targets x86_64 Linux with glibc 2.17 or newer
+and a working X11 display (or XWayland). Standard desktop X11/font libraries
+are still provided by the host. The static AppImage runtime includes
+libfuse, so system `libfuse2` is not required. FUSE mounting support is needed
+for normal execution; extraction mode works without it.
+
 Tested on:
 
 - Ubuntu
@@ -125,6 +167,10 @@ Tested on:
 - SteamOS
 - Steam Deck
 - Fedora
+
+After the automatic GitHub release has published successfully, comment `/retest`
+on the AppImage catalog pull request. Retesting before updating the release
+would test the old artifact again.
 
 ---
 

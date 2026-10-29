@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import re
 import json
@@ -289,5 +290,19 @@ class FlasherGUI(tk.Tk):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=APP_TITLE)
+    parser.add_argument(
+        "--smoke-test", action="store_true",
+        help="Show the window for 15 seconds and exit without flashing."
+    )
+    args = parser.parse_args()
     app = FlasherGUI()
+    if args.smoke_test:
+        app.update()
+        if not app.winfo_ismapped():
+            raise RuntimeError("The application window did not appear")
+        app.flash_btn.config(state="disabled")
+        app.after(15000, app.destroy)
     app.mainloop()
+    if args.smoke_test:
+        print("GUI smoke test passed", flush=True)

@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 HERE="$(dirname "$(readlink -f "$0")")"
 export APPDIR="$HERE"
 
-exec "$HERE/usr/bin/iso-flasher-gui" "$@"
+RUNTIME="$HERE/usr/lib/rgs-python"
+if [[ -d "$RUNTIME" ]]; then
+  export TCL_LIBRARY="$RUNTIME/usr/share/tcltk/tcl8.6"
+  export TK_LIBRARY="$RUNTIME/usr/share/tcltk/tk8.6"
+  export TKPATH="$TK_LIBRARY"
+  # Use the interpreter directly: the upstream launcher changes APPDIR, which
+  # would prevent the GUI from finding our privileged flashing runner.
+  exec "$RUNTIME/opt/python3.12/bin/python3.12" -I "$HERE/usr/bin/iso-flasher-gui" "$@"
+fi
+
+# Source checkout only. Release builds always stage the bundled runtime above.
+exec python3 -I "$HERE/usr/bin/iso-flasher-gui" "$@"

@@ -1,0 +1,65 @@
+name: Build, test, and release AppImage
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GUI test dependencies (no Python or Tk packages)
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth
+      - name: Build portable AppImage
+        run: ./build_appimage.sh
+      - name: Check shell syntax
+        run: |
+          for script in build_appimage.sh iso-flasher.AppDir/AppRun tests/smoke_appimage.sh; do
+            bash -n "$script"
+          done
+      - name: Open the packaged GUI without host Python
+        run: xvfb-run -a bash tests/smoke_appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RGS-ISO-Flasher-x86_64
+          path: RGS-ISO-Flasher-x86_64.AppImage
+          if-no-files-found: error
+
+  release:
+    name: Publish tested AppImage
+    needs: appimage
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: RGS-ISO-Flasher-x86_64
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: build-${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          APPIMAGE=RGS-ISO-Flasher-x86_64.AppImage
+          sha256sum "$APPIMAGE" > "$APPIMAGE.sha256"
+
+          # A rerun of an already published build must not replace its assets.
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG has already been published."
+            exit 0
+          fi
+
+          gh release create "$RELEASE_TAG" "$APPIMAGE" "$APPIMAGE.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "RGS ISO Flasher $RELEASE_TAG" \
+            --generate-notes \
+            --latest
